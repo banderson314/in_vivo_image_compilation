@@ -347,7 +347,6 @@ def compile_images(image_files, mouse_list, input_directory):
 
 # Define the input directory where your images are located
 input_directory = select_input_directory()
-#input_directory = "Z:/Brandon/Experiments/Sodium iodate/140 20 mg kg NaIO3 young mice - GA/cSLO"
 
 
 
