@@ -2,14 +2,16 @@ import tkinter as tk
 from tkinter import filedialog
 from tkinter import ttk
 from datetime import datetime
+import re
 import math
 import os
 import pandas as pd
 import numpy as np
 import cv2
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 import warnings
 warnings.filterwarnings("ignore", message=".*pin_memory.*")
+import subprocess
 def get_reader():
 	"""Return a persistent EasyOCR reader, loading it only once."""
 	if not hasattr(get_reader, "reader"):
@@ -19,13 +21,20 @@ def get_reader():
 		print("EasyOCR is loaded")
 	return get_reader.reader
 
+# Allowed image extensions
+image_extensions = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
+
+
+"""
+Updates you should consider including:
+
+An extra optional dialog box with additional settings such as margin size etc.
+The ability to show multiple dates
+What if you gave the option to have a black background?
+"""
 
 
 def user_defined_settings():
-	# Allowed image extensions
-	image_extensions = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
-
-
 	def on_close_window():
 		root.destroy()
 		exit()
@@ -177,7 +186,11 @@ def user_defined_settings():
 
 				# Update the number of mice
 				number_of_mice_frame.figure_out_how_many_mice()
+
+				# Update the availabe images the user can select (e.g. "BAF", "OCT vertical", etc.)
+				images_to_use_frame.determine_what_images_are_available()
 			
+
 			# If this isn't a directory that exists, change the color to red
 			else:
 				entry_widget.config(fg="red")
@@ -301,9 +314,9 @@ def user_defined_settings():
 			edit_button = tk.Button(self, text="Edit info", command=self.edit_mouse_info)
 			edit_button.grid(row=0, column=3, padx=5, pady=0)
 
-			cslo_eartag_button = tk.Button(self, text="Determine ear tag number based off of cSLO images",
-								  command=self.determine_cslo_eartag_number)
-			cslo_eartag_button.grid(row=1, column=0, columnspan=4, padx=5, pady=3)
+			cslo_labID_button = tk.Button(self, text="Determine lab ID based off of cSLO images",
+								  command=self.determine_cslo_labID_number)
+			cslo_labID_button.grid(row=1, column=0, columnspan=4, padx=5, pady=3)
 
 		def choose_file(self):
 			info_file_path = filedialog.askopenfilename(
@@ -320,7 +333,7 @@ def user_defined_settings():
 		def create_blank_df(self):
 			self.df = pd.DataFrame(columns=[
 				"cSLO number",
-				"ET number",
+				"Lab ID",
 				"Cage number",
 				"Treatment group",
 				"Exclude images"
@@ -349,7 +362,7 @@ def user_defined_settings():
 					# Create a new row with cSLO number set and other columns empty/NaN
 					new_row = {
 						"cSLO number": mouse,
-						"ET number": "",
+						"Lab ID": "",
 						"Cage number": "",
 						"Treatment group": "",
 						"Exclude images": False
@@ -396,7 +409,7 @@ def user_defined_settings():
 			save_button = tk.Button(top, text="Save", command=save_changes)
 			save_button.grid(row=len(self.df)+1, column=0, columnspan=len(self.df.columns), pady=10)
 			
-		def determine_cslo_eartag_number(self):
+		def determine_cslo_labID_number(self):
 			# Get a list of directories that have cSLO images
 			data_dic = directory_frame.get_data()
 			available_directories = data_dic["directories"]	# Will be a list of tuples: (directory, "cslo"/"oct")
@@ -415,11 +428,11 @@ def user_defined_settings():
 				for cslo_num, et_value in self.cslo_ear_tag_dic.items():
 					# check if the cSLO number exists in the df
 					if cslo_num in self.df["cSLO number"].values:
-						# update the ET number
-						self.df.loc[self.df["cSLO number"] == cslo_num, "ET number"] = et_value
+						# update the Lab ID
+						self.df.loc[self.df["cSLO number"] == cslo_num, "Lab ID"] = et_value
 					else:
 						# add a new row
-						new_row = {"cSLO number": cslo_num, "ET number": et_value}
+						new_row = {"cSLO number": cslo_num, "Lab ID": et_value}
 						self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
 			self.edit_mouse_info()
 
@@ -433,9 +446,9 @@ def user_defined_settings():
 			# Remove any mice that were marked to be excluded
 			self.df_to_export = self.df_to_export[self.df_to_export["Exclude images"] != True]
 
-			# Create dictionary with cSLO numbers (key) and [Ear tag number, cage, group]
+			# Create dictionary with cSLO numbers (key) and [Lab ID, cage, group]
 			mouse_info_dic = {
-				row["cSLO number"]: (row["ET number"], row["Cage number"], row["Treatment group"])
+				row["cSLO number"]: (row["Lab ID"], row["Cage number"], row["Treatment group"])
 				for _, row in self.df_to_export.iterrows()
 			}
 
@@ -575,10 +588,10 @@ def user_defined_settings():
 			cslo_cb = tk.Checkbutton(self, text="cSLO numbers", variable=self.cslo_number_var)
 			cslo_cb.grid(row=0, column=1, padx=5, pady=0, sticky="w")
 
-			# Ear tag checkbox
-			self.eartag_number_var = tk.BooleanVar(value=False)
-			eartag_cb = tk.Checkbutton(self, text="Ear tag numbers", variable=self.eartag_number_var)
-			eartag_cb.grid(row=0, column=2, padx=5, pady=0, sticky="w")
+			# Lab ID checkbox
+			self.labID_var = tk.BooleanVar(value=False)
+			labID_cb = tk.Checkbutton(self, text="Lab IDs", variable=self.labID_var)
+			labID_cb.grid(row=0, column=2, padx=5, pady=0, sticky="w")
 
 			# Crop cSLO text checkbox
 			self.crop_cslo_text_var = tk.BooleanVar(value=True)
@@ -588,12 +601,12 @@ def user_defined_settings():
 
 		def get_data(self):
 			self.cslo_number_bool = self.cslo_number_var.get()
-			self.eartag_number_bool = self.eartag_number_var.get()
+			self.labID_bool = self.labID_var.get()
 			self.crop_cslo_text_bool = self.crop_cslo_text_var.get()
 
 			return {
 				"cslo_number_bool": self.cslo_number_bool,
-				"eartag_number_bool": self.eartag_number_bool,
+				"labID_bool": self.labID_bool,
 				"crop_cslo_text_bool": self.crop_cslo_text_bool
 			}
 
@@ -618,13 +631,9 @@ def user_defined_settings():
 			oct_crop_button = tk.Button(self, text="Find minimum OCT height", command=self.find_minimum_oct_height)
 			oct_crop_button.grid(row=2, column=3, padx=5, pady=0)
 
-		def find_minimum_oct_height(self):
-			print("Button currently not functional")
-
 		def oct_crop_checkbox(self):
 			if self.oct_crop_var.get():
 				self.oct_crop_entry.config(state="normal")
-				self.oct_crop_entry.delete(0, tk.END)
 				
 				# -- Figure out the height of OCT images, if any --
 				# Find OCT directories
@@ -647,20 +656,377 @@ def user_defined_settings():
 							with Image.open(image_path) as img:
 								_, image_height = img.size
 					if image_height > 0:
+						self.oct_crop_entry.delete(0, tk.END)
 						self.oct_crop_entry.insert(0, image_height)
 					else:
 						self.oct_crop_entry.insert(0, "480")
-				else:
-					self.oct_crop_entry.insert(0, "480")
+
 			else:
+				self.oct_crop_entry.delete(0, tk.END)
 				self.oct_crop_entry.config(state="disabled")
-	
+		
+
+		def find_minimum_oct_height(self):
+			oct_heights = []
+
+			self.available_directories = directory_frame.get_data()["directories"]
+
+			for directory in self.available_directories:
+				if directory[1] == "oct":
+					directory_path = directory[0]
+				else:
+					continue
+			
+				image_files = [
+					f for f in os.listdir(directory_path)
+					if f.lower().endswith(tuple(image_extensions)) and os.path.isfile(os.path.join(directory_path, f))
+				]
+
+				for image_file in image_files:
+					# Only including images if the user hasn't removed them
+					cslo_number = image_file.split("_")[0]
+					if cslo_number in mouse_info_frame.get_data()["mouse_info_dic"]:
+						image_path = os.path.join(directory_path, image_file)
+						image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+						top, bottom = find_oct_retina_bounds(image)
+						height = abs(bottom-top)
+						oct_heights.append(height)
+			
+			if len(oct_heights) > 0:
+				self.smallest_possible_height = max(oct_heights)
+				self.oct_crop_entry.delete(0, tk.END)
+				self.oct_crop_entry.insert(0, self.smallest_possible_height)
+			else:
+				self.oct_crop_entry.delete(0, tk.END)
+
+
+			return
+
+			# Reporting what image requires the greatest height
+			for directory in self.available_directories:
+				if directory[1] == "oct":
+					directory_path = directory[0]
+				else:
+					continue
+			
+				image_files = [
+					f for f in os.listdir(directory_path)
+					if f.lower().endswith(tuple(image_extensions)) and os.path.isfile(os.path.join(directory_path, f))
+				]
+
+				for image_file in image_files:
+					image_path = os.path.join(directory_path, image_file)
+					image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+					top, bottom = find_oct_retina_bounds(image)
+					height = abs(bottom-top)
+					if height == self.smallest_possible_height:
+						print(image_path)
+						print(f"Top: {top}. Bottom: {bottom}.")
+
+
+		def get_data(self):
+			oct_height = self.oct_crop_entry.get()
+
+			return {
+				"oct_height": oct_height
+			}
+
+
 	class ImagesToUseFrame(tk.Frame):
 		def __init__(self, parent):
 			super().__init__(parent)
 
-			label = tk.Label(self, text="Images to use")
-			label.grid(row=0, column=0, padx=5)
+			title = tk.Label(self, text="Images to use and the order they are arranged in:")
+			title.grid(row=0, column=0, columnspan=2, sticky="w", padx=5, pady=(2,5))
+
+			# --- Main area: Available | Selected side by side ---
+			main_frame = tk.Frame(self)
+			main_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=(17,5))
+			main_frame.columnconfigure(0, weight=1)
+			main_frame.columnconfigure(1, weight=1)
+
+			# Available list
+			available_frame = tk.Frame(main_frame)
+			available_frame.grid(row=0, column=0, sticky="new", padx=(0, 15))
+
+			tk.Label(available_frame, text="Available image types").grid(row=0, column=0, sticky="w")
+			self.available_listbox = tk.Listbox(available_frame, selectmode="browse", height=1, width=25)
+			self.available_listbox.grid(row=1, column=0, sticky="nsew", pady=3)
+			self.available_listbox.bind("<Double-Button-1>", self.add_selected_from_listbox)
+			self.available_listbox.config(selectbackground="SystemHighlight", activestyle="none")
+
+			# Scrollbar (initially hidden)
+			self.available_scrollbar = tk.Scrollbar(available_frame, orient="vertical")
+			self.available_listbox.config(yscrollcommand=self.available_scrollbar.set)
+			self.available_scrollbar.config(command=self.available_listbox.yview)
+
+			# Selected list (container with draggable rows)
+			selected_frame = tk.Frame(main_frame)
+			selected_frame.grid(row=0, column=1, sticky="nsew")
+			#selected_frame.rowconfigure(1, weight=1)
+
+			tk.Label(selected_frame, text="Selected images (rename or reorder)").grid(row=0, column=0, sticky="w")
+			self.selected_frame = tk.Frame(selected_frame)
+			self.selected_frame.grid(row=1, column=0, sticky="nsew")
+
+			self.available_image_types = []
+			self.selected_image_types = []
+			self.rows = []
+			self.drag_data = None
+
+			
+		# --- Populate available options ---
+		def determine_what_images_are_available(self):
+			directories = directory_frame.get_data()["directories"]
+			self.available_image_types_set = set()
+
+			for directory, image_type in directories:
+				if image_type == "oct":
+					image_files = [
+						f for f in os.listdir(directory)
+						if os.path.isfile(os.path.join(directory, f))
+						and os.path.splitext(f)[1].lower() in image_extensions
+					]
+					for image_file in image_files:
+						oct_type = "OCT " + image_file.split("_")[2]
+						self.available_image_types_set.add(oct_type)
+				
+				elif image_type =="cslo":
+					image_files = []
+					
+					# Grabbing all cSLO file names
+					for subdir, dirs, files in os.walk(directory):
+						if os.path.basename(subdir) in {"OD", "OS"}:
+							for f in files:
+								if os.path.splitext(f)[1].lower() in image_extensions:
+									image_files.append(f)
+					
+					cslo_images_dic = {}
+					for image in image_files:
+						image_base = os.path.splitext(image)[0]
+						image_number, mouse_number, eye, image_type = image_base.split("_")
+						mouse_eye = mouse_number + "_" + eye
+
+						if mouse_eye not in cslo_images_dic:
+							cslo_images_dic[mouse_eye] = {}
+
+						if image_type not in cslo_images_dic[mouse_eye]:
+							cslo_images_dic[mouse_eye][image_type] = 0
+
+						cslo_images_dic[mouse_eye][image_type] += 1
+					
+					max_counts = {}
+					for mouse_eye, counts in cslo_images_dic.items():
+						for image_type, count in counts.items():
+							if image_type not in max_counts or count > max_counts[image_type]:
+								max_counts[image_type] = count
+
+					def ordinal(n):
+						if 10 <= n % 100 <= 20:
+							suffix = "th"
+						else:
+							suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+						return f"{n}{suffix}"
+
+					for image_type, count in max_counts.items():
+						image_type = "cSLO " + image_type
+						if int(count) == 1:
+							self.available_image_types_set.add(image_type)
+						else:
+							self.available_image_types_set.discard(image_type)
+							i = 0
+							for i in range(int(count)):
+								image_type_ammended = f"{image_type} ({ordinal(i+1)})"
+								self.available_image_types_set.add(image_type_ammended)
+								self.available_image_types_set.add(f"{image_type} [select]")
+						
+
+
+			self.available_image_types = sorted(list(self.available_image_types_set))
+			self.refresh_available_list()
+
+
+		def refresh_available_list(self):
+			"""Update available listbox items and manage scrollbar visibility."""
+			# Clear listbox
+			self.available_listbox.delete(0, tk.END)
+			
+			# Create a set of the original names already selected
+			selected_originals = {orig for orig, _ in self.selected_image_types}
+
+			# Insert items that are not yet selected
+			for item in self.available_image_types:
+				if item not in selected_originals:
+					self.available_listbox.insert(tk.END, item)
+
+			# Adjust height
+			num_items = self.available_listbox.size()
+			self.available_listbox.config(height=min(num_items, 10))  # max height = 10
+
+			# Show or hide scrollbar
+			if num_items > 10:
+				self.available_scrollbar.grid(row=1, column=1, sticky="ns")
+			else:
+				self.available_scrollbar.grid_forget()
+
+
+		# --- Add/Remove logic ---
+		def add_selected_from_listbox(self, event=None):
+			selection = self.available_listbox.curselection()
+			if not selection:
+				return
+			
+			value = self.available_listbox.get(selection[0])
+			self.available_listbox.delete(selection[0])
+			self.selected_image_types.append((value, value))  # (original, current/custom)
+			self.add_label_row(value)
+
+			# Refresh available list to update height and scrollbar
+			self.refresh_available_list()
+
+
+
+		def add_label_row(self, selection):
+			frame = tk.Frame(self.selected_frame)
+			frame.grid(sticky="ew", pady=0)
+			frame.columnconfigure(1, weight=1)
+
+			handle = tk.Label(frame, text="≡", font=("Arial", 10), cursor="fleur")
+			handle.grid(row=0, column=0, padx=(0,2), pady=0)
+			handle.bind("<Button-1>", self.start_drag)
+			handle.bind("<B1-Motion>", self.do_drag)
+			handle.bind("<ButtonRelease-1>", self.stop_drag)
+
+			label = tk.Label(frame, text=selection, anchor="w")
+			label.grid(row=0, column=1, sticky="ew", pady=0)
+
+			remove_btn = tk.Button(frame, text="✕", relief="flat", bd=0,
+								command=lambda f=frame, s=selection: self.remove_row(f, s))
+			remove_btn.grid(row=0, column=3, padx=(2,0), pady=0)
+
+
+			# Determining initial custom name
+			custom_name = selection
+			if custom_name[:5] == "cSLO ":
+				custom_name = custom_name[5:]
+			elif custom_name[:4] == "OCT ":
+				custom_name = custom_name[4:]
+			if custom_name[-9:] == " [select]":
+				custom_name = custom_name[:-9]
+			ordinal_format = r" \(\d+(st|nd|rd|th)\)$"
+			custom_name = re.sub(ordinal_format, "", custom_name)
+			custom_name = custom_name[0].upper() + custom_name[1:]
+
+			image_type_name_var = tk.StringVar(value=custom_name)
+			entry_box = tk.Entry(frame, textvariable=image_type_name_var, width=15)
+			entry_box.grid(row=0, column=2, padx=(5,0))
+
+			# Update self.selected_image_types when entry changes
+			def on_entry_change(*args):
+				for i, (orig, custom) in enumerate(self.selected_image_types):
+					if orig == selection:
+						self.selected_image_types[i] = (orig, image_type_name_var.get())
+						break
+
+			image_type_name_var.trace_add("write", on_entry_change)
+			on_entry_change()	# Force initial update
+
+
+			self.rows.append((frame, selection))
+			self.repack_rows()
+
+
+
+		def remove_row(self, frame, selection):
+			for i, (f, sel) in enumerate(self.rows):
+				if f == frame:
+					f.destroy()
+					del self.rows[i]
+					break
+
+			# remove from selected_image_types (match by first element)
+			self.selected_image_types = [
+				pair for pair in self.selected_image_types if pair[0] != selection
+			]
+
+			self.refresh_available_list()
+			self.repack_rows()
+
+
+
+
+		def repack_rows(self):
+			for i, (f, _) in enumerate(self.rows):
+				f.grid(row=i, column=0, sticky="ew", pady=0)
+
+
+		# --- Drag & reorder logic ---
+		def start_drag(self, event):
+			widget = event.widget.master
+			self.drag_data = {
+				"widget": widget,
+				"start_y": event.y_root,
+				"orig_index": self.get_row_index(widget),
+				"original_colors": {
+					widget: widget.cget("bg"),
+					**{child: child.cget("bg") for child in widget.winfo_children()}
+					}
+			}
+			widget.lift()
+			widget.config(bg="#929292")
+			for child in widget.winfo_children():
+				child.config(bg="#929292")
+
+		def do_drag(self, event):
+			if not self.drag_data:
+				return
+			widget = self.drag_data["widget"]
+			y = event.y_root
+			widget.lift()
+
+			hover_index = None
+			for i, (f, _) in enumerate(self.rows):
+				if f == widget:
+					continue
+				fy = f.winfo_rooty()
+				fh = f.winfo_height()
+				if fy < y < fy + fh:
+					hover_index = i
+					break
+
+			current_index = self.get_row_index(widget)
+			if hover_index is not None and hover_index != current_index:
+				self.rows.insert(hover_index, self.rows.pop(current_index))
+				self.selected_image_types.insert(hover_index, self.selected_image_types.pop(current_index))
+				self.repack_rows()
+
+
+		def stop_drag(self, event):
+			widget = event.widget.master
+			original_colors = self.drag_data["original_colors"]
+
+			# Restore frame color
+			if widget in original_colors:
+				widget.config(bg=original_colors[widget])
+
+			# Restore each child’s color
+			for child in widget.winfo_children():
+				if child in original_colors:
+					child.config(bg=original_colors[child])
+			self.drag_data = None
+
+
+		def get_row_index(self, frame):
+			for i, (f, _) in enumerate(self.rows):
+				if f == frame:
+					return i
+			return None
+
+
+		def get_data(self):
+			return {"images_to_use": self.selected_image_types}
+
+
 
 	class PresetFrame(tk.Frame):
 		def __init__(self, parent):
@@ -705,6 +1071,8 @@ def user_defined_settings():
 			self.settings.update(row_col_frame.get_data())
 			self.settings.update(mouse_info_frame.get_data())
 			self.settings.update(number_and_cslo_crop_frame.get_data())
+			self.settings.update(oct_crop_frame.get_data())
+			self.settings.update(images_to_use_frame.get_data())
 
 
 
@@ -803,8 +1171,163 @@ def determine_ear_tag_number_in_cslo_images(base_directory):
 
 
 
+def find_oct_retina_bounds(img):
+	"""Return the topmost and bottommost pixel positions of the retina."""
+	# Convert to grayscale if needed
+	if img.ndim == 3:
+		img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+	# Flatten along width (take max across columns) to get brightness by row
+	#row_max = img.max(axis=1).astype(float)
+	row_brightness = np.percentile(img, 95, axis=1).astype(float)
+
+	# Compute adaptive threshold based on overall brightness
+	mean = np.mean(img)
+	std = np.std(img)
+	cutoff = max(mean + std, 50)
+
+	# Find where the retina (bright region) exists
+	#bright_rows = np.where(row_max > cutoff)[0]
+	bright_rows = np.where(row_brightness > cutoff)[0]
+
+	if bright_rows.size == 0:
+		return img.shape[0], 0  # nothing bright enough found
+
+	# Return absolute top and bottom of the bright region
+	top = int(bright_rows.min())
+	bottom = int(bright_rows.max())
+	return top, bottom
+
+
 settings = user_defined_settings()
 for key, value in settings.items():
 	print(f"{key}: {value}")
 
+print("")
+print(settings)
 
+
+def compile_images(settings):
+	# Unpack settings
+	directories = settings["directories"]
+	cslo_directories = []
+	oct_directories = []
+	for directory, image_type in directories:
+		if image_type == "cslo":
+			cslo_directories.append(directory)
+		elif image_type == "oct":
+			oct_directories.append(directory)
+	document_title = settings["document_title"]
+	subtitle = settings["subtitle"]
+	number_of_rows = settings["number_of_rows"]
+	number_of_columns = settings["number_of_columns"]
+	mouse_info_dic = settings["mouse_info_dic"]
+	cslo_number_bool = settings["cslo_number_bool"]
+	labID_bool = settings["labID_bool"]
+	crop_cslo_text_bool = settings["crop_cslo_text_bool"]
+	oct_height = settings["oct_height"]
+	images_to_use = settings["images_to_use"]
+
+	background_color = (255, 255, 255)
+	text_color = (0, 0, 0)
+	completed_file_path = "C:/Users/bran314/Desktop/cSLO image compilation images/image_compilation.jpg"
+
+
+	# Get a list if all images to be used
+	cslo_image_file_paths = []
+	for directory in cslo_directories:
+		mice = [f for f in os.listdir(directory) if os.path.isdir(os.path.join(directory, f))]
+		mice_directories = []
+		
+		# Excluding any mice that the user may have manually removed
+		for mouse in mice:
+			if mouse in mouse_info_dic:
+				mice_directories.append(os.path.join(directory, mouse))
+		
+		for mouse_directory in mice_directories:
+			for root, dirs, files in os.walk(mouse_directory):	# recursively walk all subfolders
+				folder_name = os.path.basename(root)
+				if folder_name in ("OD", "OS"):
+					for f in files:
+						if f.lower().endswith(tuple(image_extensions)):
+							cslo_image_file_paths.append(os.path.join(root, f))
+	
+		
+	oct_image_file_paths = []
+	for directory in oct_directories:
+		potential_oct_image_files = [f for f in os.listdir(directory)
+					 if f.lower().endswith(tuple(image_extensions))]
+		
+		for file in potential_oct_image_files:
+			if file.split("_")[0] in mouse_info_dic:
+				oct_image_file_paths.append(os.path.join(directory, file))
+	
+	if not cslo_image_file_paths and not oct_image_file_paths:
+		print("No images are found. Exiting program.")
+		exit()
+
+
+
+
+	# Determine the size of the compilation document
+	if cslo_image_file_paths:
+		example_image = Image.open(cslo_image_file_paths[0])
+	else:
+		example_image = Image.open(oct_image_file_paths[0])
+	image_width = example_image.width
+	image_height = example_image.height
+
+	###### Consider making these sizes proportional to your image sizes? #######
+	column_margin_size = 45
+	row_margin_size = 400
+
+	x_offset = 400
+	compilation_width = number_of_columns * (image_width * 2 + column_margin_size) + x_offset 
+
+	y_offset = 700
+	if document_title == "":
+		y_offset -= 250
+		subtitle_y = 35
+	else:
+		subtitle_y = 230
+	if subtitle == "":
+		y_offset -= 70
+	compilation_height = (image_height * 2 * number_of_rows) + ((number_of_rows - 1) * row_margin_size) + y_offset + 100
+	compilation_height = int(compilation_height)
+	compiled_image = Image.new('RGB', (compilation_width, compilation_height), background_color)
+
+
+	# Creating a title for the document
+	draw = ImageDraw.Draw(compiled_image)
+	text_color = (0, 0, 0)
+	title_font = ImageFont.load_default(size=160)
+	draw.text((30, 20), document_title, fill=text_color, font=title_font)
+
+	# Creating a subtitle for the document
+	title_font = ImageFont.load_default(size=90)
+	draw.text((30, subtitle_y), subtitle, fill=text_color, font=title_font)
+
+
+
+	# Saving the final product
+	compiled_image.save(completed_file_path)
+
+	return completed_file_path
+
+
+exit()
+#completed_file_path = compile_images(settings)
+
+
+
+# Opening the final product
+if os.name == 'nt':  # Check if the operating system is Windows
+	os.startfile(completed_file_path)
+	exit()
+try:
+	subprocess.Popen(['xdg-open', completed_file_path])  # Opens on Linux systems
+except OSError:
+	try:
+		subprocess.Popen(['open', completed_file_path])  # Opens on macOS
+	except OSError:
+		exit()
