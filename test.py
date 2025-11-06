@@ -726,8 +726,10 @@ def user_defined_settings():
 
 		def get_data(self):
 			oct_height = self.oct_crop_entry.get()
+			oct_crop_bool = self.oct_crop_var.get()
 
 			return {
+				"oct_crop_bool": oct_crop_bool,
 				"oct_height": oct_height
 			}
 

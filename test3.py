@@ -1,4 +1,4 @@
-from PIL import Image, ImageDraw, ImageFont, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk, UnidentifiedImageError
 import os
 from dataclasses import dataclass
 import tkinter as tk
@@ -14,11 +14,12 @@ image_extensions = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 
 def user_defined_settings():
 	"""Dialog box where user defines settings and returns them as a dictionary"""
-	# C:/Users/nodna/Desktop/cSLO image compilation images/Less images
 	settings = {
 		'directories': [
 			('C:/Users/bran314/Desktop/cSLO image compilation images/Less images/cSLO', 'cslo'),
 			('C:/Users/bran314/Desktop/cSLO image compilation images/Less images/OCT', 'oct')],
+			('C:/Users/nodna/Desktop/cSLO image compilation images/Less images/cSLO', 'cslo'),
+			('C:/Users/nodna/Desktop/cSLO image compilation images/Less images/OCT', 'oct')],
 		 'document_title': 'In vivo imaging',
 		 'subtitle': 'October 23, 2025',
 		 'number_of_rows': 1,
@@ -31,7 +32,8 @@ def user_defined_settings():
 		 'cslo_number_bool': True,
 		 'labID_bool': True,
 		 'crop_cslo_text_bool': True,
-		 'oct_height': '350',
+		 'oct_crop_bool': True,
+		 'oct_height': '48',
 		 'images_to_use': [
 			 ('cSLO BAF (1st)', 'BAF'),
 			 ('cSLO IRAF [select]', 'IRAF'),
@@ -44,19 +46,109 @@ def user_defined_settings():
 	return settings, mode
 
 
+def find_oct_retina_bounds(img):
+	"""Return the topmost and bottommost pixel positions of the retina."""
+	# Convert to grayscale if needed
+	if img.ndim == 3:
+		img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+	# Flatten along width (take max across columns) to get brightness by row
+	#row_max = img.max(axis=1).astype(float)
+	row_brightness = np.percentile(img, 95, axis=1).astype(float)
+
+	# Compute adaptive threshold based on overall brightness
+	mean = np.mean(img)
+	std = np.std(img)
+	cutoff = max(mean + std, 50)
+
+	# Find where the retina (bright region) exists
+	#bright_rows = np.where(row_max > cutoff)[0]
+	bright_rows = np.where(row_brightness > cutoff)[0]
+
+	if bright_rows.size == 0:
+		return img.shape[0], 0  # nothing bright enough found
+
+	# Return absolute top and bottom of the bright region
+	top = int(bright_rows.min())
+	bottom = int(bright_rows.max())
+	return top, bottom
+
+
+
 class ImageCompilation:
 	def __init__(self, settings=None, mode="full"):
 		self.settings = settings or {}
 		self.mode = mode
 		self.mouse_image_list = {}
-		self.canvas = None
-		self.layout_map = None
-		self.metadata = {}
-		self.example_mouse_number = None  # to be set later
 
 
+		# Modify user input of image modalities to use into something more usable
+		# Ex. ('cSLO BAF (1st)', 'BAF') --> class(imager, image_type_name, select_required, multiple_index, custom_name)
 		original_images_to_use = self.settings.get('images_to_use', [])
 		self.image_type_objects = [self.ImageType.from_tuple(t) for t in original_images_to_use]
+
+		# -- Determining cslo and oct image sizes and assigning images as examples --
+		for directory, imager in self.settings['directories']:
+			if imager == "cslo":
+				# Get the first subdirectory in the root
+				first_subdir = next(
+					os.path.join(directory, d)
+					for d in os.listdir(directory)
+					if os.path.isdir(os.path.join(directory, d))
+				)
+				# Get the first subdirectory inside that, which should be "OD" or "OS"
+				second_subdir = next(
+					os.path.join(first_subdir, d)
+					for d in os.listdir(first_subdir)
+					if os.path.isdir(os.path.join(first_subdir, d)) and d in {"OD", "OS"}
+				)
+				directory = second_subdir
+
+			files = [
+				f for f in os.listdir(directory)
+				if os.path.splitext(f)[1].lower() in image_extensions
+			]
+
+			example_path = os.path.join(directory, files[0])
+			if imager == "cslo" and not hasattr(self, "example_cslo_image"):
+				try:
+					self.example_cslo_image = Image.open(example_path)
+					self.cslo_width, self.cslo_height = self.example_cslo_image.size
+					if self.settings['crop_cslo_text_bool']:	# If the user specified that the text should be cropped off (will result in a square)
+						self.cslo_height = self.cslo_width
+						self.example_cslo_image = self.example_cslo_image.crop((0, 0, self.cslo_width, self.cslo_height))
+				except (FileNotFoundError, UnidentifiedImageError):
+					self.example_cslo_image = None
+					self.cslo_width, self.cslo_height = 768, 868
+					if self.settings['crop_cslo_text_bool']:
+						self.cslo_height = 768
+			elif imager == "oct" and not hasattr(self, "example_oct_image"):
+				try:
+					self.example_oct_image = Image.open(example_path)
+					self.oct_width, self.oct_height = self.example_oct_image.size
+				except (FileNotFoundError, UnidentifiedImageError):
+					self.example_oct_image = None
+					self.oct_width, self.oct_height = 640, 480
+				if self.settings['oct_crop_bool']:	# If the user has specified a specific height should be used
+					self.oct_height = int(self.settings['oct_height'])
+
+				
+				# Resizing if needed
+				if self.oct_width != self.cslo_width:
+					new_width = self.cslo_width
+					w, h = self.example_oct_image.size
+					aspect_ratio = h / w
+					new_height = int(new_width * aspect_ratio)
+					self.example_oct_image = self.example_oct_image.resize((new_width, new_height), Image.LANCZOS)
+					self.oct_width, self.oct_height = new_width, new_height
+
+			# Stop looping once both found
+			if hasattr(self, "example_cslo_image") and hasattr(self, "example_oct_image"):
+				break
+		
+
+
+
 
 
 
@@ -237,13 +329,54 @@ class ImageCompilation:
 	def assemble_mouse_image_grid(self, mouse_id):
 		"""Creates image compilation and metadata for one mouse"""
 		
-		def crop_cslo_image(image_path):
+
+		def crop_cslo_image(image):
 			# Crops the text off of the bottom of the image
-			image = Image.open(image_path)
 			width, height = image.size
 			cropped_image = image.crop((0, 0, width, width))
 
 			return cropped_image
+		
+		def crop_oct_image(image):
+			desired_oct_height = int(self.settings['oct_height'])
+
+			# Case 1: Already correct height
+			if image.height == desired_oct_height:
+				return image
+			
+			# Determine where the center of the retina is
+			# Convert PIL → NumPy
+			img = np.array(image)
+			if img.ndim == 3:
+				# Normalize color channel order to BGR for OpenCV
+				if img.shape[2] == 4:
+					img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+				else:
+					img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+			
+			top_of_retina, bottom_of_retina = find_oct_retina_bounds(img)
+			center_of_retina = (top_of_retina + bottom_of_retina) // 2
+
+			# Case 2: Crop if taller
+			if image.height > desired_oct_height:
+				half_height = desired_oct_height // 2
+				top_crop = max(center_of_retina - half_height, 0)
+				bottom_crop = top_crop + desired_oct_height
+
+				# Adjust if bottom exceeds bounds
+				if bottom_crop > image.height:
+					bottom_crop = image.height
+					top_crop = bottom_crop - desired_oct_height
+
+				return image.crop((0, top_crop, image.width, bottom_crop))
+
+			# Case 3: Pad if shorter
+			new_img = Image.new("RGB", (image.width, desired_oct_height), color="black")
+			y_offset = (desired_oct_height - image.height) // 2
+			new_img.paste(image, (0, y_offset))
+			return new_img
+			
+			
 
 		def user_choose_which_images_to_use(image_path_list, title):
 			def image_click(image_path):
@@ -340,12 +473,36 @@ class ImageCompilation:
 			return root.selected_image if hasattr(root, 'selected_image') else None
 
 
+		def create_single_mouse_canvas():
+			cslo_count, oct_count = 0, 0
+			for image_modality in self.image_type_objects:
+				if image_modality.imager == "cslo":
+					cslo_count += 1
+				elif image_modality.imager == "oct":
+					oct_count += 1
+			
+			canvas_width = self.cslo_width * 2	# 2x because OD and OS; oct images will be adjusted to match cslo images
+			print(self.oct_height)
+			canvas_height = (self.cslo_height * cslo_count) + (self.oct_height * oct_count)
+			canvas = Image.new("RGB", (canvas_width, canvas_height), color="black")
+
+			return canvas
+
+
+		# -- Main body of this function --
+		# Will take one mouse number (mouse_id) and loop through all images generate a canvas with all images compiled together
+		
+		individual_mouse_canvas = create_single_mouse_canvas()
+		x_offset_od = 0
+		x_offset_os = self.cslo_width
+		y_offset_od = 0
+		y_offset_os = 0
 
 		for eye, cslo_or_oct in self.mouse_image_list[mouse_id].items():
 			for image_modality in self.image_type_objects:	# Loops through the images the user selected they wanted (i.e. BAF, IRAF, horizontal, etc.)
 				image_path_to_use = None
 				
-				if image_modality.imager not in cslo_or_oct:		# Imager being either "cslo" or "oct"
+				if image_modality.imager not in cslo_or_oct:		# "imager" being either "cslo" or "oct"
 					continue  # Skip imagers not present for this eye
 
 				available_image_paths = cslo_or_oct[image_modality.imager]	# All paths for that imager and eye
@@ -390,16 +547,45 @@ class ImageCompilation:
 							image_path_to_use = user_choose_which_images_to_use(image_paths_with_same_modality, dialog_title)
 						else:
 							image_path_to_use = None
+						print(image_path_to_use)
+				
+
+				# -- Putting the image into the canvas --
+				if image_path_to_use:	# Ignoring any image paths that are None
+					# Cropping
+					img = Image.open(image_path_to_use)
+					if image_modality.imager == "cslo" and self.settings['crop_cslo_text_bool']:
+						img = crop_cslo_image(img)
+					elif image_modality.imager == "oct" and self.settings['oct_crop_bool']:
+						img = crop_oct_image(img)
 					
+					# Setting x, y offsets
+					if eye == "OD":
+						x_offset = x_offset_od
+						y_offset = y_offset_od
+					elif eye == "OS":
+						x_offset = x_offset_os
+						y_offset = y_offset_os
 
-		
-		
-		exit()
+					# Resizing if needed
+					if img.width != self.cslo_width:
+						new_width = self.cslo_width
+						w, h = img.size
+						aspect_ratio = h / w
+						new_height = int(new_width * aspect_ratio)
+						img = img.resize((new_width, new_height), Image.LANCZOS)
 
-		
-		mouse_compilation = None  # Replace with Pillow Image.new(...) etc.
-		metadata = {}
-		return mouse_compilation, metadata
+					# Pasting img into canvas
+					individual_mouse_canvas.paste(img, (x_offset, y_offset))
+				
+				# Adjusting offsets
+				if eye == "OD":
+					y_offset_od += img.height
+				elif eye == "OS":
+					y_offset_os += img.height
+
+
+		return individual_mouse_canvas
 
 	# ====================================================
 	# CANVAS AND LAYOUT
@@ -481,9 +667,10 @@ class ImageCompilation:
 		self.build_mouse_image_list()
 
 
-
-		example_mouse_number = list(self.mouse_image_list.keys())[0] if self.mouse_image_list else None
-		example_compilation, example_meta = self.assemble_mouse_image_grid(example_mouse_number)
+		# Example mouse setup
+		self.example_mouse_number = list(self.mouse_image_list.keys())[0]
+		example_mouse_canvas = self.assemble_mouse_image_grid(self.example_mouse_number)
+		example_mouse_canvas.show()
 
 
 		return
