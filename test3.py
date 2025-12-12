@@ -153,10 +153,6 @@ class ImageCompilation:
 		
 
 
-
-
-
-
 	
 	@dataclass
 	class ImageType:
@@ -225,14 +221,16 @@ class ImageCompilation:
 	def add_non_user_defined_settings(self):
 		"""Add additional settings to self.settings"""
 		additional_settings = {
-			'background_color': (255, 255, 255),	# white
-			'text_color': (0, 0, 0),				# black
+			'background_color': (15, 15, 15),	# black
+			'text_color': (255, 255, 255),				# white
 			'final_product_file_path': "C:/Users/bran314/Desktop/cSLO image compilation images/image_compilation.jpg",
 			'column_margin_size': 45,
-			'row_margin_size': 400,
-			'title_font': ImageFont.load_default(size=160),
-			'subtitle_font': ImageFont.load_default(size=90),
-			'outer_margin_size': 30
+			'row_margin_size': 150,
+			'title_font': ImageFont.load_default(size=225),
+			'subtitle_font': ImageFont.load_default(size=150),
+			'heading_font': ImageFont.load_default(size=150),
+			'subheading_font': ImageFont.load_default(size=120),
+			'outer_margin_size': 50
 		}
 
 		self.settings.update(additional_settings)
@@ -314,7 +312,7 @@ class ImageCompilation:
 				if mouse_number not in self.mouse_image_list:
 					self.mouse_image_list[mouse_number] = {
 							"OD": {"cslo": [], "oct": []},
-							"OS": {"cslo": [], "oct": []},
+							"OS": {"cslo": [], "oct": []}
 						}
 				
 				self.mouse_image_list[mouse_number][eye][cslo_or_oct].append(path)
@@ -491,18 +489,80 @@ class ImageCompilation:
 
 			return canvas
 
+		
+
 
 		# -- Main body of this function --
 		# Will take one mouse number (mouse_id) and loop through all images generate a canvas with all images compiled together
+		
+		# Early return
 		if mouse_id == "return_canvas_only":
-			return create_single_mouse_canvas()
+			blank_mouse_canvas_no_text = create_single_mouse_canvas()
+			return blank_mouse_canvas_no_text
 
-		individual_mouse_canvas = create_single_mouse_canvas()
+		# Initial canvas with only images (no headings)
+		individual_mouse_canvas_images_only = create_single_mouse_canvas()
+
+
+		# -- Creating the text heading area --
+		# Helper
+		def measure_text(font, text):
+			x0, y0, x1, y1 = font.getbbox(text)
+			return (x1 - x0), (y1 - y0), -y0   # width, height, baseline offset
+
+		# Compute a consistent height for heading text (fixed)
+		heading_font = self.settings['heading_font']
+		_, heading_h, heading_offset = measure_text(heading_font, "Hpqy")  # includes ascenders & descenders
+
+		# Gaps
+		gap_before_cslo_heading = 10
+		gap_after_cslo_heading = 5
+		gap_after_od_os = 25
+
+
+		# Create mouse number text (but not draw yet)
+		heading_font = self.settings['heading_font']
+		cslo_heading_text = mouse_id
+		cslo_heading_w, cslo_heading_h, baseline_offset = measure_text(heading_font, cslo_heading_text)
+		
+		cslo_heading_x = (individual_mouse_canvas_images_only.width - cslo_heading_w) // 2
+		cslo_heading_bottom = gap_before_cslo_heading + heading_h
+
+
+		# Create OD and OS text (but not draw yet)
+		subheading_font = self.settings['subheading_font']
+		od_w, od_h, od_offset = measure_text(subheading_font, "OD")
+		od_x = (self.cslo_width - od_w) // 2
+		os_x = od_x + self.cslo_width
+		od_y = cslo_heading_bottom + gap_after_cslo_heading
+		os_y = od_y
+		
+		# Create new canvas with heading area
+		self.total_heading_height = od_y + od_h + gap_after_od_os
+		new_height = individual_mouse_canvas_images_only.height + self.total_heading_height
+		new_width = individual_mouse_canvas_images_only.width
+		new_canvas = Image.new("RGB", (new_width, new_height), color=self.settings['background_color'])
+		new_canvas.paste(individual_mouse_canvas_images_only, (0, self.total_heading_height))
+		individual_mouse_canvas = new_canvas
+
+
+		# Draw heading texts
+		draw = ImageDraw.Draw(individual_mouse_canvas)
+		draw.text((cslo_heading_x, gap_before_cslo_heading + baseline_offset), 
+			cslo_heading_text, font=heading_font, fill=self.settings['text_color'])
+		draw.text((od_x, od_y + od_offset), 
+			"OD", font=subheading_font, fill=self.settings['text_color'])
+		draw.text((os_x, os_y + od_offset), 
+			"OS", font=subheading_font, fill=self.settings['text_color'])
+
+
 		x_offset_od = 0
 		x_offset_os = self.cslo_width
-		y_offset_od = 0
-		y_offset_os = 0
+		y_offset_od = self.total_heading_height
+		y_offset_os = self.total_heading_height
 
+
+		# Add the images to the mouse canvas
 		for eye, cslo_or_oct in self.mouse_image_list[mouse_id].items():
 			for image_modality in self.image_type_objects:	# Loops through the images the user selected they wanted (i.e. BAF, IRAF, horizontal, etc.)
 				image_path_to_use = None
@@ -555,7 +615,7 @@ class ImageCompilation:
 						print(image_path_to_use)
 				
 
-				# -- Putting the image into the canvas --
+				# -- Putting the image into the individual mouse canvas --
 				if image_path_to_use:	# Ignoring any image paths that are None
 					# Cropping
 					img = Image.open(image_path_to_use)
@@ -590,12 +650,15 @@ class ImageCompilation:
 					y_offset_os += img.height
 
 
+
+
+
 		return individual_mouse_canvas
 
 	# ====================================================
 	# CANVAS AND LAYOUT
 	# ====================================================
-	def create_master_canvas(self, example_mouse_canvas):
+	def create_master_canvas(self):
 		"""Create the master canvas based on one example mouse."""
 
 		# Unpacking self.settings to make easier to read
@@ -616,8 +679,7 @@ class ImageCompilation:
 		text_color = self.settings['text_color']						# (x, x, x)
 
 
-		# -- Defining additional variables --
-		padding = 20
+
 		
 		@dataclass
 		class LayoutElement:
@@ -654,7 +716,6 @@ class ImageCompilation:
 					kind="text",
 					text=text,
 					font=font,
-					#position=(position[0], position[1] + y_offset),
 					position=position,
 					width=width,
 					height=height
@@ -685,8 +746,9 @@ class ImageCompilation:
 				elif self.kind == "image":
 					canvas.paste(self.image, self.position)
 
+		
 
-		# Creating elements
+		# Creating text elements
 		title_element = LayoutElement.from_text(
 			self.settings['document_title'], 
 			self.settings['title_font'], 
@@ -695,25 +757,72 @@ class ImageCompilation:
 		subtitle_element = LayoutElement.from_text(
 			self.settings['subtitle'],
 			self.settings['subtitle_font'],
-			(outer_margin_size, title_element.bottom + padding)
+			(outer_margin_size, title_element.bottom + (title_element.height//6))
 		)
-
 		
 		self.master_canvas_elements = [
 			title_element, 
 			subtitle_element
 		]
 
+
+		# Determining image modality text on left margin
+		def position_halfway_vertically(text, text_font, imager):
+			# Get image height
+			if imager == "cslo":
+				img_h = self.cslo_height
+			elif imager == "oct":
+				img_h = self.oct_height
+			else:
+				raise ValueError("Invalid image_modality")
+
+			# Measure text height
+			x0, y0, x1, y1 = text_font.getbbox(text)
+			h = y1 - y0
+			baseline = -y0
+			text_height = h - baseline  # how tall the drawn text is
+			y_position = (img_h - text_height) // 2
+
+			return y_position
+
+		
+		x_offset = outer_margin_size
+		y_offset = subtitle_element.bottom + row_margin_size
+		modality_text_max_width = 0
+		for row in range(number_of_rows):
+			top_of_image = y_offset + self.total_heading_height
+			for modality in self.image_type_objects:
+				text = modality.custom_name
+				font = self.settings['heading_font']
+				text_x = x_offset
+				text_y = top_of_image + position_halfway_vertically(text, font, modality.imager)
+				modality_text_element = LayoutElement.from_text(text, font, (text_x, text_y))
+				self.master_canvas_elements.append(modality_text_element)
+
+				if modality_text_element.width > modality_text_max_width:
+					modality_text_max_width = modality_text_element.width
+
+				# Adjust for next image
+				if modality.imager == "cslo":
+					top_of_image += self.cslo_height
+				elif modality.imager == "oct":
+					top_of_image += self.oct_height
+			y_offset = top_of_image + row_margin_size
+
+
+
 		# Determining location and pasting mouse images onto master canvas
 		row_count = 0
 		column_count = 0
-		x_offset = outer_margin_size
-		y_offset = subtitle_element.bottom + padding
+		column_one_x_offset = outer_margin_size + modality_text_max_width + min(outer_margin_size, 40)
+		x_offset = column_one_x_offset
+		y_offset = subtitle_element.bottom + row_margin_size
 		for mouse, mouse_info in self.settings['mouse_info_dic'].items():
 			# Inserting image type titles
 			if column_count == 0:
 				for image_type in self.image_type_objects:
 					text = image_type.custom_name	
+					
 			
 			# Creating individual mouse compilation
 			mouse_canvas = self.assemble_mouse_image_grid(mouse)
@@ -727,12 +836,12 @@ class ImageCompilation:
 			# Determining the next column/row to use
 			column_count += 1
 			if column_count == number_of_columns:
-				x_offset = outer_margin_size
-				y_offset = mouse_element.bottom + padding
+				x_offset = column_one_x_offset
+				y_offset = mouse_element.bottom + row_margin_size
 				row_count += 1
 				column_count = 0
 			else:
-				x_offset = mouse_element.right + padding
+				x_offset = mouse_element.right + column_margin_size
 
 
 
@@ -833,13 +942,13 @@ class ImageCompilation:
 		self.build_mouse_image_list()
 
 		# 3. Determine size of individual mouse canvas
-		#self.example_mouse_number = list(self.mouse_image_list.keys())[0]
-		#example_mouse_canvas = self.assemble_mouse_image_grid(self.example_mouse_number)
-		example_mouse_canvas = self.assemble_mouse_image_grid("return_canvas_only")
-		
+		# Initializing individual mouse canvas creation to determine heading size (self.total_heading_height)
+		example_mouse_number = list(self.mouse_image_list.keys())[0]
+		example_mouse_canvas = self.assemble_mouse_image_grid(example_mouse_number)
+
 		
 		#. Create master canvas and layout
-		self.create_master_canvas(example_mouse_canvas)
+		self.create_master_canvas()
 		self.master_canvas.show()
 
 		return
