@@ -85,8 +85,6 @@ Click on images to allow you to manually change them
 
 
 Bugs:
-Removing mice manually doesn't update the row x column numbers
-Adding another folder of images resets the df of mice
 
 """
 
@@ -300,12 +298,14 @@ def user_defined_settings():
 			text_label = tk.Label(self, text="Number of mice found:")
 			text_label.grid(row=0, column=0, padx=5)
 
-			number_of_mice = 0
-			mouse_number_label = tk.Label(self, text=number_of_mice)
+			self.mouse_number_var = tk.StringVar(value="0")
+			mouse_number_label = tk.Label(self, textvariable=self.mouse_number_var)
 			mouse_number_label.grid(row=0, column=1, padx=5)
 
 
 		def figure_out_how_many_mice(self):
+			self.mice_set.clear()
+
 			directory_info_from_user = directory_frame.get_data().get("directories")
 			
 			for entry in directory_info_from_user:
@@ -339,16 +339,14 @@ def user_defined_settings():
 		
 			number_of_mice = len(self.mice_set)
 			self.update_mouse_number(number_of_mice)
+			mouse_info_frame.sync_mice_with_df()
 
 		def update_mouse_number(self, number_of_mice):
-			mouse_number_label = tk.Label(self, text=number_of_mice)
-			mouse_number_label.grid(row=0, column=1, padx=5)
-			
+			self.mouse_number_var.set(str(number_of_mice))
+
 			# Update the row x column numbers
 			row_col_frame.update_numbers(number_of_mice)
 
-			# Update the mouse dataframe
-			mouse_info_frame.on_entry_change()
 		
 		def get_data(self):
 			return {
@@ -360,7 +358,12 @@ def user_defined_settings():
 		def __init__(self, parent):
 			super().__init__(parent)
 
-			self.create_blank_df()
+			self.df = pd.DataFrame(columns=[
+				"cSLO number",
+				"Lab ID",
+				"Group",
+				"Exclude images"
+			])
 			self.group_order = []
 
 			edit_button = tk.Button(self, text="Edit mouse info", command=self.edit_mouse_info)
@@ -373,32 +376,46 @@ def user_defined_settings():
 			group_order_button = tk.Button(self, text="Group order", command=self.edit_group_order)
 			group_order_button.grid(row=0, column=2, padx=5)
 
-		
+
 		def on_entry_change(self, *args):
-			self.create_blank_df()
-			self.add_mice_from_image_files()
+			self.sync_mice_with_df()
 
-		def create_blank_df(self):
-			self.df = pd.DataFrame(columns=[
-				"cSLO number",
-				"Lab ID",
-				"Group",
-				"Exclude images"
-			])
+		def count_included_mice(self):
+			if self.df.empty:
+				return 0
+
+			count = (~self.df["Exclude images"].astype(bool)).sum()
+			return max(0, int(count))
 
 
-		def add_mice_from_image_files(self):
-			# Including mouse numbers found in the files not in the excel spreadsheet
-			for mouse in number_of_mice_frame.mice_set:
-				if mouse not in self.df["cSLO number"].values:
-					# Create a new row with cSLO number set and other columns empty/NaN
-					new_row = {
+
+		def sync_mice_with_df(self):
+			mice_set = set(number_of_mice_frame.mice_set)
+
+			# 1. Remove mice no longer present
+			self.df = self.df[self.df["cSLO number"].isin(mice_set)].reset_index(drop=True)
+
+			# 2. Add new mice
+			existing_mice = set(self.df["cSLO number"].values)
+			new_mice = mice_set - existing_mice
+
+			if new_mice:
+				new_rows = pd.DataFrame([
+					{
 						"cSLO number": mouse,
 						"Lab ID": "",
 						"Group": "",
 						"Exclude images": False
 					}
-					self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
+					for mouse in new_mice
+				])
+				self.df = pd.concat([self.df, new_rows], ignore_index=True)
+
+			# Update displayed count
+			number_of_mice_frame.update_mouse_number(
+				self.count_included_mice()
+			)
+
 
 		def edit_mouse_info(self):
 			top = tk.Toplevel(root)
@@ -470,6 +487,7 @@ def user_defined_settings():
 			def save_changes():
 				for (i, col), widget in entries.items():
 					self.df.at[i, col] = widget.get()
+					
 				self.group_order = self.df["Group"].unique().tolist()
 				if self.group_order == ['']:
 					self.group_order = []
@@ -478,6 +496,11 @@ def user_defined_settings():
 				if self.group_order:
 					largest_group_size = self.df['Group'].value_counts().max()
 					row_col_frame.update_numbers(largest_group_size)
+
+				# Update mouse count based on exclusions
+				number_of_mice_frame.update_mouse_number(
+					self.count_included_mice()
+				)
 
 				top.destroy()
 
@@ -800,6 +823,8 @@ def user_defined_settings():
 
 			if mouse_info_frame.group_order:
 				self.label.config(text="Row x column per group:")
+			else:
+				self.label.config(text="Row x column:")
 			
 
 		@staticmethod
